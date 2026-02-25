@@ -851,6 +851,18 @@ input[type=color]{
       <input type="date" id="evDate"/>
     </div>
     <div class="form-group">
+      <label>Start Time <span style="color:var(--text3);font-weight:400;text-transform:none">(optional)</span></label>
+      <input type="time" id="evStartTime"/>
+    </div>
+    <div class="form-group">
+      <label>End Time <span style="color:var(--text3);font-weight:400;text-transform:none">(optional)</span></label>
+      <input type="time" id="evEndTime"/>
+    </div>
+    <div class="form-group">
+      <label>Notes <span style="color:var(--text3);font-weight:400;text-transform:none">(optional)</span></label>
+      <textarea id="evNotes" placeholder="Any extra details..." style="min-height:60px"></textarea>
+    </div>
+    <div class="form-group">
       <label>Category / Color</label>
       <select id="evCat">
         <option value="work">💼 Work</option>
@@ -875,6 +887,21 @@ input[type=color]{
     <div class="modal-actions">
       <button class="btn ghost" onclick="closeModal('msModal')">Cancel</button>
       <button class="btn" onclick="saveMilestone()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Day View Modal -->
+<div class="modal-backdrop" id="dayViewModal">
+  <div class="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+      <div class="modal-title" style="margin-bottom:0" id="dayViewTitle"></div>
+      <button class="btn sm" onclick="addEventFromDayView()">+ Add Event</button>
+    </div>
+    <input type="hidden" id="dayViewDate"/>
+    <div id="dayViewList"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" onclick="closeModal('dayViewModal')">Close</button>
     </div>
   </div>
 </div>
@@ -1180,13 +1207,27 @@ function calNav(dir){ calMonth+=dir; if(calMonth>11){calMonth=0;calYear++;} if(c
 function openCalModal(dateStr){
   document.getElementById('evDate').value=dateStr;
   document.getElementById('evTitle').value='';
+  document.getElementById('evStartTime').value='';
+  document.getElementById('evEndTime').value='';
+  document.getElementById('evNotes').value='';
   document.getElementById('calModalTitle').textContent='Add Event — '+fmtDisplay(dateStr);
   openModal('calModal');
 }
 
+function fmtTime(t){
+  if(!t) return '';
+  const [h,m]=t.split(':').map(Number);
+  const ampm=h>=12?'PM':'AM';
+  const hr=h%12||12;
+  return `${hr}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
 function saveEvent(){
   const title=document.getElementById('evTitle').value.trim(); if(!title) return;
-  events.push({id:Date.now(), title, date:document.getElementById('evDate').value, cat:document.getElementById('evCat').value});
+  const startTime=document.getElementById('evStartTime').value;
+  const endTime=document.getElementById('evEndTime').value;
+  const notes=document.getElementById('evNotes').value.trim();
+  events.push({id:Date.now(), title, date:document.getElementById('evDate').value, cat:document.getElementById('evCat').value, startTime, endTime, notes});
   S.s('events',events); closeModal('calModal'); renderCalendar(); renderUpcoming();
 }
 
@@ -1205,20 +1246,24 @@ function renderCalendar(){
 
   let html=DAYS_SHORT.map(d=>`<div class="cal-dh">${d}</div>`).join('');
 
-  // prev month filler
   for(let i=startDay-1;i>=0;i--){
     const d=daysInPrev-i;
-    const ds=`${calYear}-${String(calMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     html+=`<div class="cal-cell other-month"><div class="cal-dn">${d}</div></div>`;
   }
 
   for(let d=1;d<=daysInMonth;d++){
     const ds=`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const isToday=ds===todayFmt;
-    const dayEvents=events.filter(e=>e.date===ds);
-    html+=`<div class="cal-cell ${isToday?'today':''}" onclick="openCalModal('${ds}')">
+    const dayEvents=events.filter(e=>e.date===ds).sort((a,b)=>{
+      if(a.startTime&&b.startTime) return a.startTime.localeCompare(b.startTime);
+      return 0;
+    });
+    html+=`<div class="cal-cell ${isToday?'today':''}" onclick="openDayView('${ds}')">
       <div class="cal-dn">${d}</div>
-      ${dayEvents.slice(0,2).map(e=>`<div class="cal-event ${e.cat}">${e.title}</div>`).join('')}
+      ${dayEvents.slice(0,2).map(e=>`
+        <div class="cal-event ${e.cat}">
+          ${e.startTime?fmtTime(e.startTime)+' ':''}${e.title}
+        </div>`).join('')}
       ${dayEvents.length>2?`<div style="font-size:9px;color:var(--text3)">+${dayEvents.length-2} more</div>`:''}
     </div>`;
   }
@@ -1226,20 +1271,60 @@ function renderCalendar(){
   renderUpcoming();
 }
 
+// Day view modal
+function openDayView(dateStr){
+  const dayEvents=events.filter(e=>e.date===dateStr).sort((a,b)=>{
+    if(a.startTime&&b.startTime) return a.startTime.localeCompare(b.startTime);
+    return 0;
+  });
+  document.getElementById('dayViewTitle').textContent=fmtDisplay(dateStr);
+  const list=document.getElementById('dayViewList');
+  list.innerHTML=dayEvents.length?dayEvents.map(e=>`
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px">${e.title}</div>
+          ${e.startTime?`<div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:4px">🕐 ${fmtTime(e.startTime)}${e.endTime?' – '+fmtTime(e.endTime):''}</div>`:''}
+          <span class="badge ${e.cat}">${e.cat}</span>
+          ${e.notes?`<div style="font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5">${e.notes}</div>`:''}
+        </div>
+        <button class="del-btn" onclick="deleteEvent(${e.id});openDayView('${dateStr}')">×</button>
+      </div>
+    </div>`).join(''):'<div class="empty" style="padding:20px">No events this day.</div>';
+  document.getElementById('dayViewDate').value=dateStr;
+  openModal('dayViewModal');
+}
+
+function addEventFromDayView(){
+  const dateStr=document.getElementById('dayViewDate').value;
+  closeModal('dayViewModal');
+  setTimeout(()=>openCalModal(dateStr),150);
+}
+
 function renderUpcoming(){
   const el=document.getElementById('upcomingEvents'); if(!el) return;
   const today=todayStr();
-  const upcoming=events.filter(e=>e.date>=today).sort((a,b)=>a.date.localeCompare(b.date)).slice(0,10);
+  const upcoming=events.filter(e=>e.date>=today).sort((a,b)=>{
+    if(a.date!==b.date) return a.date.localeCompare(b.date);
+    if(a.startTime&&b.startTime) return a.startTime.localeCompare(b.startTime);
+    return 0;
+  }).slice(0,15);
   if(!upcoming.length){el.innerHTML='<div class="empty"><div class="empty-icon">📅</div>No upcoming events.</div>';return;}
   el.innerHTML=upcoming.map(e=>`
-    <div class="card" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <div>
-        <div style="font-weight:500;font-size:14px">${e.title}</div>
-        <div style="font-size:12px;color:var(--text3);margin-top:2px">${fmtDisplay(e.date)}</div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <span class="badge ${e.cat}">${e.cat}</span>
-        <button class="del-btn" onclick="deleteEvent(${e.id})">×</button>
+    <div class="card" style="padding:14px 16px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px">${e.title}</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:3px">
+            📅 ${fmtDisplay(e.date)}
+            ${e.startTime?` &nbsp;·&nbsp; 🕐 ${fmtTime(e.startTime)}${e.endTime?' – '+fmtTime(e.endTime):''}` :''}
+          </div>
+          ${e.notes?`<div style="font-size:12px;color:var(--text2);margin-top:5px;line-height:1.5">${e.notes}</div>`:''}
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-left:10px;flex-shrink:0">
+          <span class="badge ${e.cat}">${e.cat}</span>
+          <button class="del-btn" onclick="deleteEvent(${e.id})">×</button>
+        </div>
       </div>
     </div>`).join('');
 }
