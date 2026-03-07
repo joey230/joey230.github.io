@@ -533,6 +533,9 @@ textarea{resize:vertical;min-height:90px;}
     <div class="logo-sub">Joey's Dashboard</div>
   </div>
   <div class="sidebar-date" id="sidebarDate"></div>
+  <div style="padding:10px 22px;border-bottom:1px solid rgba(255,255,255,0.1);">
+    <div id="syncStatus" style="font-size:12px;color:rgba(255,255,255,0.5);font-weight:600;">☁ Cloud Sync On</div>
+  </div>
   <nav>
     <div class="nav-item active" onclick="gotoPage('dashboard',this)"><span class="nav-icon">⚡</span> Dashboard</div>
     <div class="nav-item" onclick="gotoPage('todos',this)"><span class="nav-icon">✓</span> To-Do Lists</div>
@@ -829,15 +832,55 @@ textarea{resize:vertical;min-height:90px;}
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// ════ STORAGE ════
-const S={
-  g:(k)=>{try{return JSON.parse(localStorage.getItem('los_'+k));}catch{return null;}},
-  s:(k,v)=>localStorage.setItem('los_'+k,JSON.stringify(v))
+// ════ SUPABASE CONFIG ════
+const SUPA_URL = 'https://wqqvtetfmoffejzylnnw.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndxcXZ0ZXRmbW9mZmVqenlsbm53Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4NDYyOTgsImV4cCI6MjA4ODQyMjI5OH0.O751lNsQrmrGK2MGf7R772n6L_S-Bsz3B78yZp5OFY4';
+const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+// ════ CLOUD STORAGE ════
+// Uses Supabase for cloud sync, falls back to localStorage for offline
+const USER_ID = 1; // Single user app
+
+const S = {
+  // Local fallback
+  gl:(k)=>{try{return JSON.parse(localStorage.getItem('los_'+k));}catch{return null;}},
+  sl:(k,v)=>localStorage.setItem('los_'+k,JSON.stringify(v)),
+
+  // Load from Supabase (with localStorage fallback)
+  async load(table) {
+    try {
+      const {data,error} = await supa.from(table).select('data').eq('id', USER_ID).single();
+      if (error || !data) return this.gl(table) || (table==='habit_logs'?{}:[]);
+      this.sl(table, data.data); // cache locally
+      return data.data;
+    } catch {
+      return this.gl(table) || (table==='habit_logs'?{}:[]);
+    }
+  },
+
+  // Save to both Supabase and localStorage
+  async save(table, value) {
+    this.sl(table, value); // always save locally first (instant)
+    try {
+      await supa.from(table).upsert({id: USER_ID, data: value, updated_at: new Date().toISOString()});
+    } catch(e) {
+      console.warn('Cloud save failed, data saved locally:', e);
+    }
+  }
 };
 
+// Sync indicator
+function showSynced() {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  el.textContent = '✓ Synced';
+  el.style.color = '#2e7d32';
+  setTimeout(()=>{ el.textContent = '☁ Cloud Sync On'; el.style.color = ''; }, 2000);
+}
+
 // ════ PIN ════
-const CORRECT_PIN = S.g('pin')||'1234';
 let pinEntry='';
 
 function pinPress(v){
@@ -850,7 +893,8 @@ function pinPress(v){
   updateDots();
   if(pinEntry.length===4){
     setTimeout(()=>{
-      if(pinEntry===(S.g('pin')||'1234')){
+      const saved=localStorage.getItem('los_pin')||'1234';
+      if(pinEntry===saved){
         document.getElementById('pinScreen').style.display='none';
         init();
       } else {
@@ -868,14 +912,14 @@ function updateDots(){
 }
 
 // ════ STATE ════
-let todos=S.g('todos')||[];        // scheduled todos (have .date)
-let masterTodos=S.g('masterTodos')||[]; // unscheduled master list
-let goals=S.g('goals')||[];
-let recipes=S.g('recipes')||[];
-let events=S.g('events')||[];
-let habits=S.g('habits')||[];
-let habitLogs=S.g('habitLogs')||{};
-let notes=S.g('notes')||[];
+let todos=[];
+let masterTodos=[];
+let goals=[];
+let recipes=[];
+let events=[];
+let habits=[];
+let habitLogs={};
+let notes=[];
 let calYear,calMonth,miniCalYear,miniCalMonth;
 let activeWeekDay=null;
 let activeTodoView='master';
@@ -945,7 +989,7 @@ function switchTodoView(view,el){
 function addMasterTodo(){
   const txt=document.getElementById('masterInput').value.trim();if(!txt)return;
   masterTodos.push({id:Date.now(),text:txt,priority:document.getElementById('masterPriority').value,done:false});
-  S.s('masterTodos',masterTodos);
+  S.save('master_todos',masterTodos);
   document.getElementById('masterInput').value='';
   renderMasterList();
 }
@@ -959,10 +1003,10 @@ document.addEventListener('keydown',e=>{
 
 function toggleMasterTodo(id){
   const t=masterTodos.find(t=>t.id===id);if(!t)return;
-  t.done=!t.done;S.s('masterTodos',masterTodos);renderMasterList();
+  t.done=!t.done;S.save('master_todos',masterTodos);renderMasterList();
 }
 function deleteMasterTodo(id){
-  masterTodos=masterTodos.filter(t=>t.id!==id);S.s('masterTodos',masterTodos);renderMasterList();
+  masterTodos=masterTodos.filter(t=>t.id!==id);S.save('master_todos',masterTodos);renderMasterList();
 }
 function openScheduleModal(id){
   const t=masterTodos.find(t=>t.id===id);if(!t)return;
@@ -977,7 +1021,7 @@ function confirmSchedule(){
   const t=masterTodos.find(t=>t.id===id);if(!t)return;
   // Copy to scheduled todos
   todos.push({id:Date.now(),text:t.text,priority:t.priority,done:false,date,fromMaster:true});
-  S.s('todos',todos);
+  S.save('todos',todos);
   closeModal('scheduleModal');
   renderWeeklyView();renderDailyView();renderDashboard();
 }
@@ -1027,7 +1071,7 @@ function selectWeekDay(ds){activeWeekDay=ds;renderWeeklyView();}
 function addWeeklyTodo(){
   const txt=document.getElementById('weeklyInput').value.trim();if(!txt)return;
   todos.push({id:Date.now(),text:txt,priority:document.getElementById('weeklyPriority').value,done:false,date:activeWeekDay||todayStr()});
-  S.s('todos',todos);document.getElementById('weeklyInput').value='';
+  S.save('todos',todos);document.getElementById('weeklyInput').value='';
   renderWeeklyView();renderDashboard();
 }
 
@@ -1048,7 +1092,7 @@ function renderWeeklyTasks(){
 function addDailyTodo(){
   const txt=document.getElementById('dailyInput').value.trim();if(!txt)return;
   todos.push({id:Date.now(),text:txt,priority:document.getElementById('dailyPriority').value,done:false,date:todayStr()});
-  S.s('todos',todos);document.getElementById('dailyInput').value='';
+  S.save('todos',todos);document.getElementById('dailyInput').value='';
   renderDailyView();renderDashboard();
 }
 
@@ -1079,17 +1123,17 @@ function renderTodoItem(t,view){
 
 function toggleTodo(id){
   const t=todos.find(t=>t.id===id);if(!t)return;
-  t.done=!t.done;S.s('todos',todos);
+  t.done=!t.done;S.save('todos',todos);
   renderWeeklyTasks();renderDailyView();renderDashboard();
 }
 function deleteTodo(id){
-  todos=todos.filter(t=>t.id!==id);S.s('todos',todos);
+  todos=todos.filter(t=>t.id!==id);S.save('todos',todos);
   renderWeeklyTasks();renderDailyView();renderDashboard();
 }
 function carryTodo(id){
   const t=todos.find(t=>t.id===id);if(!t)return;
   const d=parseDate(t.date);d.setDate(d.getDate()+1);
-  t.date=fmtDate(d);t.done=false;S.s('todos',todos);
+  t.date=fmtDate(d);t.done=false;S.save('todos',todos);
   renderWeeklyView();renderDailyView();
 }
 
@@ -1147,25 +1191,25 @@ function saveGoal(){
   const name=document.getElementById('gName').value.trim();if(!name)return;
   const milestones=document.getElementById('gMilestones').value.split('\n').filter(l=>l.trim()).map(l=>({id:Date.now()+Math.random(),text:l.trim(),done:false}));
   goals.push({id:Date.now(),name,cat:document.getElementById('gCat').value,target:document.getElementById('gTarget').value,milestones});
-  S.s('goals',goals);['gName','gTarget','gMilestones'].forEach(id=>document.getElementById(id).value='');
+  S.save('goals',goals);['gName','gTarget','gMilestones'].forEach(id=>document.getElementById(id).value='');
   closeModal('goalModal');renderGoals();
 }
 function toggleMilestone(goalId,msId){
   const g=goals.find(g=>g.id===goalId);if(!g)return;
   const ms=g.milestones.find(m=>m.id===msId);if(!ms)return;
-  ms.done=!ms.done;S.s('goals',goals);renderGoals();
+  ms.done=!ms.done;S.save('goals',goals);renderGoals();
 }
-function deleteGoal(id){goals=goals.filter(g=>g.id!==id);S.s('goals',goals);renderGoals();}
+function deleteGoal(id){goals=goals.filter(g=>g.id!==id);S.save('goals',goals);renderGoals();}
 function openMsModal(goalId){document.getElementById('msGoalId').value=goalId;document.getElementById('msInput').value='';openModal('msModal');}
 function saveMilestone(){
   const txt=document.getElementById('msInput').value.trim();if(!txt)return;
   const g=goals.find(g=>g.id===parseInt(document.getElementById('msGoalId').value));if(!g)return;
   g.milestones.push({id:Date.now(),text:txt,done:false});
-  S.s('goals',goals);closeModal('msModal');renderGoals();
+  S.save('goals',goals);closeModal('msModal');renderGoals();
 }
 function deleteMilestone(goalId,msId){
   const g=goals.find(g=>g.id===goalId);if(!g)return;
-  g.milestones=g.milestones.filter(m=>m.id!==msId);S.s('goals',goals);renderGoals();
+  g.milestones=g.milestones.filter(m=>m.id!==msId);S.save('goals',goals);renderGoals();
 }
 function renderGoals(){
   const el=document.getElementById('goalsList');
@@ -1207,10 +1251,10 @@ function saveRecipe(){
   const ingredients=document.getElementById('rIngredients').value.split('\n').filter(l=>l.trim());
   const steps=document.getElementById('rSteps').value.split('\n').filter(l=>l.trim());
   recipes.push({id:Date.now(),name,cat:document.getElementById('rCat').value,ingredients,steps});
-  S.s('recipes',recipes);['rName','rIngredients','rSteps'].forEach(id=>document.getElementById(id).value='');
+  S.save('recipes',recipes);['rName','rIngredients','rSteps'].forEach(id=>document.getElementById(id).value='');
   closeModal('recipeModal');renderRecipes();
 }
-function deleteRecipe(id){recipes=recipes.filter(r=>r.id!==id);S.s('recipes',recipes);renderRecipes();}
+function deleteRecipe(id){recipes=recipes.filter(r=>r.id!==id);S.save('recipes',recipes);renderRecipes();}
 function toggleRecipeBody(id){document.getElementById('rb-'+id).classList.toggle('open');}
 function renderRecipeFilters(){
   document.getElementById('recipeFilters').innerHTML=recipeTags.map(t=>`<div class="filter-pill ${activeRecipeFilter===t?'active':''}" onclick="setRecipeFilter('${t}')">${t}</div>`).join('');
@@ -1259,9 +1303,9 @@ function saveEvent(){
   const startDate=document.getElementById('evStartDate').value;if(!startDate)return;
   const endDate=document.getElementById('evEndDate').value||startDate;
   events.push({id:Date.now(),title,date:startDate,startDate,endDate,startTime:document.getElementById('evStartTime').value,endTime:document.getElementById('evEndTime').value,notes:document.getElementById('evNotes').value.trim(),cat:document.getElementById('evCat').value});
-  S.s('events',events);closeModal('calModal');renderCalendar();renderUpcoming();
+  S.save('events',events);closeModal('calModal');renderCalendar();renderUpcoming();
 }
-function deleteEvent(id){events=events.filter(e=>e.id!==id);S.s('events',events);renderCalendar();renderUpcoming();}
+function deleteEvent(id){events=events.filter(e=>e.id!==id);S.save('events',events);renderCalendar();renderUpcoming();}
 function eventOnDate(e,ds){const start=e.startDate||e.date;const end=e.endDate||e.date;return ds>=start&&ds<=end;}
 
 function renderCalendar(){
@@ -1342,17 +1386,17 @@ function addHabit(){
   const name=document.getElementById('habitName').value.trim();if(!name)return;
   const h={id:Date.now(),name,createdAt:todayStr()};
   habits.push(h);habitLogs[h.id]={};
-  S.s('habits',habits);S.s('habitLogs',habitLogs);
+  S.save('habits',habits);S.save('habit_logs',habitLogs);
   document.getElementById('habitName').value='';renderHabits();
 }
 function toggleHabitDay(hid,dateStr){
   if(!habitLogs[hid])habitLogs[hid]={};
   habitLogs[hid][dateStr]=!habitLogs[hid][dateStr];
-  S.s('habitLogs',habitLogs);renderHabits();renderDashboard();
+  S.save('habit_logs',habitLogs);renderHabits();renderDashboard();
 }
 function deleteHabit(id){
   habits=habits.filter(h=>h.id!==id);delete habitLogs[id];
-  S.s('habits',habits);S.s('habitLogs',habitLogs);renderHabits();
+  S.save('habits',habits);S.save('habit_logs',habitLogs);renderHabits();
 }
 function getStreak(hid){
   let d=new Date();let streak=0;
@@ -1391,9 +1435,9 @@ function renderHabits(){
 function addNote(isJournal){
   const txt=document.getElementById('noteInput').value.trim();if(!txt)return;
   notes.unshift({id:Date.now(),text:txt,date:todayStr(),journal:isJournal});
-  S.s('notes',notes);document.getElementById('noteInput').value='';renderNotes();
+  S.save('notes',notes);document.getElementById('noteInput').value='';renderNotes();
 }
-function deleteNote(id){notes=notes.filter(n=>n.id!==id);S.s('notes',notes);renderNotes();}
+function deleteNote(id){notes=notes.filter(n=>n.id!==id);S.save('notes',notes);renderNotes();}
 function renderNotes(){
   const journals=notes.filter(n=>n.journal);const quick=notes.filter(n=>!n.journal);
   document.getElementById('journalList').innerHTML=journals.length?journals.map(n=>`
@@ -1452,8 +1496,22 @@ function renderDashboard(){
 }
 
 // ════ INIT ════
-function init(){
+async function init(){
   initDate();
+  document.getElementById('syncStatus').textContent = '⟳ Loading...';
+
+  // Load all data from Supabase (falls back to localStorage if offline)
+  [todos, masterTodos, goals, recipes, events, habits, habitLogs, notes] = await Promise.all([
+    S.load('todos'),
+    S.load('master_todos'),
+    S.load('goals'),
+    S.load('recipes'),
+    S.load('events'),
+    S.load('habits'),
+    S.load('habit_logs'),
+    S.load('notes'),
+  ]);
+
   renderDashboard();
   renderMasterList();
   renderWeeklyView();
@@ -1463,6 +1521,8 @@ function init(){
   renderCalendar();
   renderHabits();
   renderNotes();
+
+  document.getElementById('syncStatus').textContent = '☁ Synced';
 }
 </script>
 </body>
